@@ -33,7 +33,9 @@ class Convex:
                               on_error=self._on_error,
                               on_close=self._on_close)
         self.queries: Dict[int, Callable[[Any], None]] = {}
+        self.outstanding_mutations: Dict[int, Callable[[Any], None]] = {}
         self._next_query_id = 1
+        self._next_mutation_id = 1
         self.opened = False
         threading.Thread(target=self.ws.run_forever).start()
         while not self.opened:
@@ -45,6 +47,10 @@ class Convex:
             for mod in msg['modifications']:
                 if mod['type'] == 'QueryUpdated':
                     self.queries[mod['queryId']](mod['value'])
+        elif msg['type'] == 'MutationResponse':
+            cb = self.outstanding_mutations[msg['mutationId']]
+            del self.outstanding_mutations[msg['mutationId']]
+            cb(msg['result'])
 
     def _on_error(self, ws, error: Exception):
         raise error
@@ -66,17 +72,16 @@ class Convex:
         self._send_message(modify_query_set([(udf_path, args, self._next_query_id)]))
         self._next_query_id += 1
 
-    def wait(self):
-        self.ws.run_forever(dispatcher=rel)
-
+    def mutate(self, udf_path, args, cb=None):
+        self.outstanding_mutations[self._next_mutation_id] = cb or (lambda _: None)
+        self._send_message(mutation(self._next_mutation_id, udf_path, args))
+        self._next_mutation_id += 1
 
 import pprint
 def main():
     c = Convex(url)
     c.on_query("listOpinions.js:default", [], lambda v: pprint.pprint(v))
-    import time; time.sleep(10)
-    
-
+    #import time; time.sleep(10)
 
 def connect():
     return {
@@ -101,6 +106,13 @@ def modify_query_set(queries: List[Tuple[str, List[Any], int]]):
         ],
     }
 
+def mutation(id: int, udf_path: str, args: List[Any]=()):
+    return {
+        "type":"Mutation",
+        "mutationId": id,
+        "udfPath":udf_path,
+        "args": args
+    }
 
 #websocket.enableTrace(True)
 if __name__ == '__main__':
